@@ -1,10 +1,11 @@
-from app import build_app
+from __future__ import annotations
+
+import app
 
 
 def main() -> None:
-    demo = build_app()
-    assert demo is not None
-    print("Blocks constructed successfully")
+    assert app.demo is not None
+    print("OK: app.demo constructed successfully")
 
 
 if __name__ == "__main__":

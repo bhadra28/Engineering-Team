@@ -6,12 +6,27 @@ import subprocess
 
 SANDBOX_DIR = Path(__file__).parents[3] / "sandbox"
 SANDBOX_DIR.mkdir(parents=True, exist_ok=True)
+SANDBOX_IMAGE = "ghcr.io/astral-sh/uv:python3.13-bookworm-slim" #this is uv's own official image, comes with uv pre-installed
+
+
+def _remove_sandbox() -> None:
+    """Delete the sandbox. The container leaves a Linux .venv behind (with a lib64 symlink) that
+    Windows can't remove, so if the host can't delete it, a container clears what it created."""
+    try:
+        shutil.rmtree(SANDBOX_DIR)
+    except OSError:
+        subprocess.run(
+            ["docker", "run", "--rm", "-v", f"{SANDBOX_DIR}:/workspace", SANDBOX_IMAGE,
+             "sh", "-c", "rm -rf /workspace/* /workspace/.[!.]* /workspace/..?*"],
+            check=True, capture_output=True,
+        )
+        shutil.rmtree(SANDBOX_DIR)
 
 
 def reset_sandbox() -> None:
     """Wipe the sandbox and re-initialize it as a fresh uv project with gradio."""
     if SANDBOX_DIR.exists():
-        shutil.rmtree(SANDBOX_DIR)
+        _remove_sandbox()
     SANDBOX_DIR.mkdir(parents=True)
 
     subprocess.run(["uv", "init", "--bare", "--python", "3.13"], cwd=SANDBOX_DIR, check=True)
@@ -71,7 +86,7 @@ def docker_uv_run(args: list[str], timeout: int = 300) -> subprocess.CompletedPr
             "docker", "run", "--rm",
             "-v", f"{SANDBOX_DIR}:/workspace",
             "-w", "/workspace",
-            "ghcr.io/astral-sh/uv:python3.13-bookworm-slim", #this is uv's own official image, comes with uv pre-installed
+            SANDBOX_IMAGE,
             "uv", "run", *args, #uses python's virtual environment with dependencies
         ],
         capture_output=True,

@@ -1,151 +1,305 @@
-# Detailed Design: Trading Simulation Account Management System
+# Design: Simple Account Management System for Trading Simulation
 
-## Overview
+## Goals
 
-Build a simple in-memory account management system for a trading simulation platform.
+Build a simple single-process account management system for a trading simulation platform.
 
-The system will support:
+The system must allow users to:
 
-- Account creation with an initial deposit.
-- Deposits and withdrawals.
-- Buy and sell share transactions.
-- Validation to prevent:
-  - Negative cash balances.
-  - Buying shares without enough cash.
-  - Selling more shares than currently held.
-- Portfolio valuation using `get_share_price(symbol)`.
-- Holdings report.
-- Profit/loss report.
-- Transaction history report.
-- “As of” reports for holdings and profit/loss based on a point in time or transaction history cutoff.
+- Create an account.
+- Deposit funds.
+- Withdraw funds.
+- Record share purchases and sales.
+- Prevent invalid withdrawals, purchases, and sales.
+- Calculate current holdings.
+- Calculate account value.
+- Calculate profit/loss at any point in time.
+- List all transactions over time.
+- Use a provided `get_share_price(symbol)` function with fixed test prices for `AAPL`, `TSLA`, and `GOOGL`.
+- Interact with the system through a Gradio app.
+- Validate backend behavior with unit tests.
 
 All files will live in the same directory. No packages or subdirectories.
-
-Only standard Python libraries and `gradio` are available.
 
 ---
 
 # File Structure
 
-All files are in the project root directory:
+```text
+prices.py
+trading_backend.py
+app.py
+test_trading_backend.py
+```
+
+---
+
+# Backend Design
+
+## File: `prices.py`
+
+### Responsibility
+
+Provide share price lookup functionality.
+
+This file should contain the test implementation of `get_share_price(symbol)` that returns fixed prices for known symbols.
+
+### Constants
+
+```python
+FIXED_SHARE_PRICES: dict[str, float]
+```
+
+Suggested fixed prices:
 
 ```text
-backend.py
-app.py
-test_backend.py
-README.md
+AAPL  -> 150.00
+TSLA  -> 250.00
+GOOGL -> 2800.00
+```
+
+### Functions
+
+```python
+def get_share_price(symbol: str) -> float:
+    """
+    Return the current price for a supported share symbol.
+
+    Supported symbols:
+    - AAPL
+    - TSLA
+    - GOOGL
+
+    Args:
+        symbol: Share ticker symbol.
+
+    Returns:
+        Current share price as a float.
+
+    Raises:
+        UnknownSymbolError or ValueError if the symbol is unsupported.
+    """
+```
+
+Backend engineer may either define `UnknownSymbolError` in this file or import it from `trading_backend.py`. To avoid circular imports, prefer raising `ValueError` from `prices.py` and translating it in service code if needed.
+
+---
+
+## File: `trading_backend.py`
+
+### Responsibility
+
+Implement the core account, transaction, holdings, valuation, and validation logic.
+
+This module must be independent of Gradio.
+
+It should be fully testable through unit tests.
+
+---
+
+## Domain Rules
+
+### Account Creation
+
+- A user can create an account with an owner name and optional initial deposit.
+- Initial deposit must be non-negative.
+- Account starts with:
+  - Cash balance equal to the initial deposit.
+  - Empty holdings.
+  - A transaction recording account creation and/or initial deposit.
+
+### Deposits
+
+- Deposit amount must be greater than zero.
+- Deposits increase cash balance.
+- Deposit transactions are recorded.
+
+### Withdrawals
+
+- Withdrawal amount must be greater than zero.
+- Withdrawal is rejected if it would make cash balance negative.
+- Withdrawals decrease cash balance.
+- Withdrawal transactions are recorded.
+
+### Buying Shares
+
+- Symbol must be valid.
+- Quantity must be a positive integer.
+- Current price is retrieved using `get_share_price(symbol)`.
+- Total cost is `quantity * price`.
+- Buy is rejected if total cost exceeds cash balance.
+- Buy decreases cash balance.
+- Buy increases holdings for the symbol.
+- Buy transaction is recorded with symbol, quantity, price, and cash amount.
+
+### Selling Shares
+
+- Symbol must be valid.
+- Quantity must be a positive integer.
+- User must own at least the quantity being sold.
+- Current price is retrieved using `get_share_price(symbol)`.
+- Proceeds are `quantity * price`.
+- Sell increases cash balance.
+- Sell decreases holdings for the symbol.
+- Sell transaction is recorded with symbol, quantity, price, and cash amount.
+- Holdings with zero quantity may be omitted from reports.
+
+### Holdings at a Point in Time
+
+- Holdings should be computed from transactions whose timestamp is less than or equal to `as_of`.
+- Only buy and sell transactions affect holdings.
+- Deposits and withdrawals do not affect holdings.
+
+### Cash Balance at a Point in Time
+
+- Cash balance should be computed from transactions whose timestamp is less than or equal to `as_of`.
+- Deposits and sells increase cash.
+- Withdrawals and buys decrease cash.
+- Initial deposit/account creation increases cash.
+
+### Portfolio Value
+
+For a point in time:
+
+```text
+holdings_value = sum(quantity * current_share_price(symbol))
+total_value = cash_balance + holdings_value
+```
+
+Because the available price function returns current fixed prices only, historical valuation should use the current fixed price function even when `as_of` is in the past.
+
+### Profit/Loss
+
+Use capital-adjusted profit/loss:
+
+```text
+net_cash_contributions = deposits + initial_deposit - withdrawals
+profit_loss = total_value - net_cash_contributions
+```
+
+This avoids incorrectly treating deposits as investment gains or withdrawals as investment losses.
+
+The UI can label this as:
+
+```text
+Profit/Loss = Account Value - Net Cash Contributions
 ```
 
 ---
 
-# Module: `backend.py`
+# Backend Types
 
-## Responsibility
+## Exceptions
 
-The backend module contains all core business logic and data models.
-
-The backend should be UI-independent and fully unit-testable.
-
----
-
-## Design Principles
-
-- Use in-memory storage only.
-- Use standard library only.
-- Use `dataclasses` for models.
-- Use `Decimal` for money calculations.
-- Store each trade with the price at execution time.
-- Use the provided `get_share_price(symbol)` function for current market prices.
-- Reports can be generated:
-  - For the current full account state.
-  - As of a given timestamp.
-  - As of a given transaction id.
-
----
-
-## Price Provider
-
-### Function
+Define these custom exceptions in `trading_backend.py`.
 
 ```python
-def get_share_price(symbol: str) -> Decimal:
-    ...
+class TradingSimulationError(Exception):
+    """Base exception for trading simulation errors."""
 ```
 
-### Behavior
+```python
+class AccountNotFoundError(TradingSimulationError):
+    """Raised when an account ID does not exist."""
+```
 
-Returns the current price for supported symbols.
+```python
+class InvalidAmountError(TradingSimulationError):
+    """Raised when a deposit, withdrawal, or cash amount is invalid."""
+```
 
-Initial test implementation should return fixed prices:
+```python
+class InvalidQuantityError(TradingSimulationError):
+    """Raised when a share quantity is invalid."""
+```
 
-| Symbol | Price |
-|---|---:|
-| AAPL | 150.00 |
-| TSLA | 250.00 |
-| GOOGL | 2800.00 |
+```python
+class InsufficientFundsError(TradingSimulationError):
+    """Raised when cash balance is insufficient for withdrawal or purchase."""
+```
 
-### Validation
+```python
+class InsufficientHoldingsError(TradingSimulationError):
+    """Raised when attempting to sell more shares than owned."""
+```
 
-- Symbols should be normalized to uppercase.
-- Unknown symbols should raise `UnknownSymbolError`.
+```python
+class UnknownSymbolError(TradingSimulationError):
+    """Raised when a share symbol is unsupported."""
+```
 
 ---
 
-# Backend Data Models
-
-## Enum: `TransactionType`
+## Type Aliases
 
 ```python
-class TransactionType(Enum):
-    CREATE_ACCOUNT = "CREATE_ACCOUNT"
-    DEPOSIT = "DEPOSIT"
-    WITHDRAWAL = "WITHDRAWAL"
-    BUY = "BUY"
-    SELL = "SELL"
+AccountId = str
+Symbol = str
+```
+
+---
+
+## Transaction Type Values
+
+Use string constants or an enum.
+
+Preferred simple approach: string constants.
+
+```python
+TRANSACTION_CREATE: str
+TRANSACTION_DEPOSIT: str
+TRANSACTION_WITHDRAW: str
+TRANSACTION_BUY: str
+TRANSACTION_SELL: str
+```
+
+Allowed values:
+
+```text
+CREATE
+DEPOSIT
+WITHDRAW
+BUY
+SELL
 ```
 
 ---
 
 ## Dataclass: `Transaction`
 
-Represents one account activity.
-
 ```python
-@dataclass(frozen=True)
+@dataclass
 class Transaction:
-    transaction_id: int
+    transaction_id: str
     account_id: str
-    transaction_type: TransactionType
     timestamp: datetime
-    amount: Decimal | None = None
+    transaction_type: str
+    cash_amount: float
     symbol: str | None = None
     quantity: int | None = None
-    price: Decimal | None = None
-    cash_balance_after: Decimal | None = None
-    notes: str = ""
+    price: float | None = None
+    cash_balance_after: float | None = None
+    note: str = ""
 ```
 
-### Field Notes
+### Field Semantics
 
-- `amount`:
-  - Used for deposits and withdrawals.
-  - For trades, may store total trade value.
-- `symbol`:
-  - Used for buy/sell.
-- `quantity`:
-  - Used for buy/sell.
-- `price`:
-  - Share price at time of transaction.
-- `cash_balance_after`:
-  - Cash balance immediately after this transaction.
-- `notes`:
-  - Optional human-readable detail.
+| Field | Meaning |
+|---|---|
+| `transaction_id` | Unique transaction identifier |
+| `account_id` | Account this transaction belongs to |
+| `timestamp` | Transaction timestamp |
+| `transaction_type` | One of `CREATE`, `DEPOSIT`, `WITHDRAW`, `BUY`, `SELL` |
+| `cash_amount` | Positive cash impact amount for deposits/sells, negative for withdrawals/buys, initial deposit positive |
+| `symbol` | Share symbol for buy/sell transactions |
+| `quantity` | Share quantity for buy/sell transactions |
+| `price` | Execution price for buy/sell transactions |
+| `cash_balance_after` | Cash balance immediately after transaction |
+| `note` | Human-readable note |
 
 ---
 
 ## Dataclass: `Account`
-
-Represents one user account.
 
 ```python
 @dataclass
@@ -153,166 +307,105 @@ class Account:
     account_id: str
     owner_name: str
     created_at: datetime
-    cash_balance: Decimal
-    initial_deposit: Decimal
-    holdings: dict[str, int]
+    initial_deposit: float
+    cash_balance: float
     transactions: list[Transaction]
 ```
 
-### Field Notes
+### Notes
 
-- `cash_balance` is available uninvested cash.
-- `initial_deposit` is the account creation deposit.
-- `holdings` maps stock symbols to share quantities.
-- `transactions` is an ordered transaction log.
+- `cash_balance` is the current live cash balance.
+- Holdings do not need to be stored separately; they can be derived from transactions.
+- If backend engineer wants performance optimization, holdings can be cached internally, but tests should validate behavior through public methods only.
 
 ---
 
-## Dataclass: `HoldingReportRow`
+## Dataclass: `Holding`
 
 ```python
-@dataclass(frozen=True)
-class HoldingReportRow:
+@dataclass
+class Holding:
     symbol: str
     quantity: int
-    current_price: Decimal
-    market_value: Decimal
+    current_price: float
+    market_value: float
 ```
 
 ---
 
-## Dataclass: `PortfolioReport`
+## Dataclass: `PortfolioSnapshot`
 
 ```python
-@dataclass(frozen=True)
-class PortfolioReport:
+@dataclass
+class PortfolioSnapshot:
     account_id: str
-    owner_name: str
-    cash_balance: Decimal
-    holdings_value: Decimal
-    total_value: Decimal
-    initial_deposit: Decimal
-    net_cash_contributions: Decimal
-    profit_loss: Decimal
-    profit_loss_percent: Decimal | None
-    holdings: list[HoldingReportRow]
     as_of: datetime
-```
-
-### Profit/Loss Definition
-
-Use net cash contributions to avoid misleading results after additional deposits or withdrawals.
-
-```text
-net_cash_contributions = total_deposits - total_withdrawals
-profit_loss = total_account_value - net_cash_contributions
-profit_loss_percent = profit_loss / net_cash_contributions * 100
-```
-
-Where:
-
-```text
-total_account_value = cash_balance + current market value of holdings
-```
-
-If `net_cash_contributions` is zero, `profit_loss_percent` should be `None`.
-
-The `initial_deposit` is still stored and reported separately.
-
----
-
-# Backend Exceptions
-
-Create specific exceptions for clear validation and UI error handling.
-
-```python
-class TradingError(Exception):
-    ...
-```
-
-```python
-class AccountNotFoundError(TradingError):
-    ...
-```
-
-```python
-class AccountAlreadyExistsError(TradingError):
-    ...
-```
-
-```python
-class ValidationError(TradingError):
-    ...
-```
-
-```python
-class InsufficientFundsError(TradingError):
-    ...
-```
-
-```python
-class InsufficientSharesError(TradingError):
-    ...
-```
-
-```python
-class UnknownSymbolError(TradingError):
-    ...
+    cash_balance: float
+    holdings: dict[str, int]
+    holding_details: list[Holding]
+    holdings_value: float
+    total_value: float
+    net_cash_contributions: float
+    profit_loss: float
 ```
 
 ---
 
 # Backend Service Class
 
-## Class: `TradingService`
-
-Primary API for the app and tests.
+## Class: `AccountManager`
 
 ```python
-class TradingService:
-    def __init__(
-        self,
-        price_provider: Callable[[str], Decimal] = get_share_price,
-        clock: Callable[[], datetime] | None = None,
-    ) -> None:
-        ...
+class AccountManager:
+    """
+    In-memory account manager for the trading simulation platform.
+
+    Stores accounts and transactions in process memory.
+    """
 ```
 
-### Responsibilities
+### Constructor
 
-- Own in-memory accounts.
-- Create and mutate accounts.
-- Validate user actions.
-- Generate reports.
-- Generate transaction ids.
-- Use injected price provider for testability.
-- Use injected clock for deterministic tests.
+```python
+def __init__(self, price_lookup: Callable[[str], float] | None = None) -> None:
+    """
+    Initialize account manager.
+
+    Args:
+        price_lookup: Optional function used to retrieve share prices.
+                      Defaults to prices.get_share_price.
+    """
+```
 
 ---
 
-## Account Management Methods
+## Public Methods
 
 ### `create_account`
 
 ```python
 def create_account(
     self,
-    account_id: str,
     owner_name: str,
-    initial_deposit: Decimal | int | float | str,
+    initial_deposit: float = 0.0,
+    timestamp: datetime | None = None,
 ) -> Account:
-    ...
+    """
+    Create a new account.
+
+    Args:
+        owner_name: Name of account owner.
+        initial_deposit: Initial cash deposit. Must be >= 0.
+        timestamp: Optional creation timestamp.
+
+    Returns:
+        Created Account.
+
+    Raises:
+        InvalidAmountError: If initial_deposit is negative.
+        ValueError: If owner_name is empty.
+    """
 ```
-
-### Behavior
-
-- Creates a new account.
-- `account_id` must be unique.
-- `owner_name` must be non-empty.
-- `initial_deposit` must be positive.
-- Cash balance starts equal to `initial_deposit`.
-- Adds a `CREATE_ACCOUNT` transaction.
-- The transaction amount should equal `initial_deposit`.
 
 ---
 
@@ -320,13 +413,13 @@ def create_account(
 
 ```python
 def get_account(self, account_id: str) -> Account:
-    ...
+    """
+    Return account by ID.
+
+    Raises:
+        AccountNotFoundError if the account does not exist.
+    """
 ```
-
-### Behavior
-
-- Returns the account.
-- Raises `AccountNotFoundError` if not found.
 
 ---
 
@@ -334,16 +427,12 @@ def get_account(self, account_id: str) -> Account:
 
 ```python
 def list_accounts(self) -> list[Account]:
-    ...
+    """
+    Return all accounts.
+    """
 ```
 
-### Behavior
-
-- Returns all accounts sorted by creation time or account id.
-
 ---
-
-## Cash Methods
 
 ### `deposit`
 
@@ -351,16 +440,17 @@ def list_accounts(self) -> list[Account]:
 def deposit(
     self,
     account_id: str,
-    amount: Decimal | int | float | str,
+    amount: float,
+    timestamp: datetime | None = None,
 ) -> Transaction:
-    ...
+    """
+    Deposit cash into an account.
+
+    Raises:
+        AccountNotFoundError
+        InvalidAmountError
+    """
 ```
-
-### Behavior
-
-- Amount must be positive.
-- Adds amount to cash balance.
-- Records a `DEPOSIT` transaction.
 
 ---
 
@@ -370,22 +460,20 @@ def deposit(
 def withdraw(
     self,
     account_id: str,
-    amount: Decimal | int | float | str,
+    amount: float,
+    timestamp: datetime | None = None,
 ) -> Transaction:
-    ...
+    """
+    Withdraw cash from an account.
+
+    Raises:
+        AccountNotFoundError
+        InvalidAmountError
+        InsufficientFundsError
+    """
 ```
 
-### Behavior
-
-- Amount must be positive.
-- Reject if `amount > cash_balance`.
-- Deducts amount from cash balance.
-- Records a `WITHDRAWAL` transaction.
-- Raises `InsufficientFundsError` if withdrawal would make cash negative.
-
 ---
-
-## Trade Methods
 
 ### `buy`
 
@@ -395,27 +483,18 @@ def buy(
     account_id: str,
     symbol: str,
     quantity: int,
+    timestamp: datetime | None = None,
 ) -> Transaction:
-    ...
+    """
+    Buy shares.
+
+    Raises:
+        AccountNotFoundError
+        UnknownSymbolError
+        InvalidQuantityError
+        InsufficientFundsError
+    """
 ```
-
-### Behavior
-
-- Symbol normalized to uppercase.
-- Quantity must be a positive integer.
-- Uses `price_provider(symbol)` to get current price.
-- Total cost:
-
-```text
-total_cost = price * quantity
-```
-
-- Reject if `total_cost > cash_balance`.
-- Deducts total cost from cash.
-- Increases holdings for the symbol.
-- Records a `BUY` transaction.
-- Raises `InsufficientFundsError` if unaffordable.
-- Raises `UnknownSymbolError` if symbol unsupported.
 
 ---
 
@@ -427,302 +506,319 @@ def sell(
     account_id: str,
     symbol: str,
     quantity: int,
+    timestamp: datetime | None = None,
 ) -> Transaction:
-    ...
+    """
+    Sell shares.
+
+    Raises:
+        AccountNotFoundError
+        UnknownSymbolError
+        InvalidQuantityError
+        InsufficientHoldingsError
+    """
 ```
-
-### Behavior
-
-- Symbol normalized to uppercase.
-- Quantity must be a positive integer.
-- Reject if currently held quantity is less than sell quantity.
-- Uses `price_provider(symbol)` to get current price.
-- Total proceeds:
-
-```text
-total_proceeds = price * quantity
-```
-
-- Adds proceeds to cash.
-- Decreases holdings.
-- Remove symbol from holdings if quantity becomes zero.
-- Records a `SELL` transaction.
-- Raises `InsufficientSharesError` if trying to sell more than held.
 
 ---
 
-# Backend Reporting Methods
-
-## `get_holdings`
+### `get_holdings`
 
 ```python
 def get_holdings(
     self,
     account_id: str,
     as_of: datetime | None = None,
-    transaction_id: int | None = None,
-) -> list[HoldingReportRow]:
-    ...
+) -> dict[str, int]:
+    """
+    Return holdings for an account at a point in time.
+
+    Args:
+        account_id: Account ID.
+        as_of: Optional timestamp. If None, use current state.
+
+    Returns:
+        Dict mapping symbol to quantity.
+
+    Raises:
+        AccountNotFoundError
+    """
 ```
-
-### Behavior
-
-- Returns holdings with current market prices.
-- If no `as_of` or `transaction_id` is provided, uses current state.
-- If `as_of` is provided, reconstructs holdings from transactions up to and including that timestamp.
-- If `transaction_id` is provided, reconstructs holdings from transactions up to and including that transaction id.
-- Do not allow both `as_of` and `transaction_id` at the same time.
-- Uses current `price_provider` for valuation.
 
 ---
 
-## `get_portfolio_report`
+### `get_cash_balance`
 
 ```python
-def get_portfolio_report(
+def get_cash_balance(
     self,
     account_id: str,
     as_of: datetime | None = None,
-    transaction_id: int | None = None,
-) -> PortfolioReport:
-    ...
+) -> float:
+    """
+    Return cash balance for an account at a point in time.
+
+    Args:
+        account_id: Account ID.
+        as_of: Optional timestamp. If None, return current account cash balance.
+
+    Raises:
+        AccountNotFoundError
+    """
 ```
-
-### Behavior
-
-- Calculates:
-  - Cash balance.
-  - Holdings.
-  - Holdings market value.
-  - Total account value.
-  - Initial deposit.
-  - Net cash contributions.
-  - Profit/loss.
-  - Profit/loss percent.
-- Supports current, timestamp-based, or transaction-id-based reporting.
-- Uses reconstructed state when `as_of` or `transaction_id` is provided.
 
 ---
 
-## `list_transactions`
+### `get_portfolio_snapshot`
+
+```python
+def get_portfolio_snapshot(
+    self,
+    account_id: str,
+    as_of: datetime | None = None,
+) -> PortfolioSnapshot:
+    """
+    Return full portfolio snapshot including holdings, value, and P/L.
+
+    Args:
+        account_id: Account ID.
+        as_of: Optional timestamp. If None, use now/current state.
+
+    Returns:
+        PortfolioSnapshot.
+
+    Raises:
+        AccountNotFoundError
+        UnknownSymbolError
+    """
+```
+
+---
+
+### `list_transactions`
 
 ```python
 def list_transactions(
     self,
     account_id: str,
     as_of: datetime | None = None,
-    transaction_id: int | None = None,
 ) -> list[Transaction]:
-    ...
+    """
+    Return transactions for an account.
+
+    Args:
+        account_id: Account ID.
+        as_of: Optional timestamp. If provided, return transactions up to and including as_of.
+
+    Returns:
+        Transactions sorted by timestamp, then insertion order if needed.
+
+    Raises:
+        AccountNotFoundError
+    """
 ```
-
-### Behavior
-
-- Returns transactions in chronological order.
-- If `as_of` is provided, only include transactions up to and including timestamp.
-- If `transaction_id` is provided, only include transactions up to and including that id.
-- Do not allow both `as_of` and `transaction_id`.
 
 ---
 
 # Backend Helper Methods
 
-These can be private methods on `TradingService`.
-
-## `_next_transaction_id`
+These can be private methods on `AccountManager`.
 
 ```python
-def _next_transaction_id(self) -> int:
-    ...
+def _now(self) -> datetime:
+    """
+    Return current datetime.
+    """
 ```
 
----
+```python
+def _new_account_id(self) -> str:
+    """
+    Generate unique account ID.
+    """
+```
 
-## `_normalize_symbol`
+```python
+def _new_transaction_id(self) -> str:
+    """
+    Generate unique transaction ID.
+    """
+```
 
 ```python
 def _normalize_symbol(self, symbol: str) -> str:
-    ...
+    """
+    Normalize ticker symbol by stripping whitespace and uppercasing.
+    """
 ```
-
----
-
-## `_to_decimal_money`
 
 ```python
-def _to_decimal_money(self, value: Decimal | int | float | str) -> Decimal:
-    ...
+def _get_price_or_raise(self, symbol: str) -> float:
+    """
+    Return share price or raise UnknownSymbolError.
+    """
 ```
-
-### Behavior
-
-- Converts input to `Decimal`.
-- Rejects invalid numeric values.
-- Money should be rounded/quantized to 2 decimal places.
-
----
-
-## `_validate_positive_money`
 
 ```python
-def _validate_positive_money(self, value: Decimal, field_name: str) -> None:
-    ...
+def _validate_positive_amount(self, amount: float) -> None:
+    """
+    Validate amount is greater than zero.
+    """
 ```
 
----
-
-## `_validate_positive_quantity`
+```python
+def _validate_non_negative_amount(self, amount: float) -> None:
+    """
+    Validate amount is greater than or equal to zero.
+    """
+```
 
 ```python
 def _validate_positive_quantity(self, quantity: int) -> None:
-    ...
+    """
+    Validate quantity is a positive integer.
+    """
 ```
-
----
-
-## `_record_transaction`
 
 ```python
 def _record_transaction(
     self,
     account: Account,
-    transaction_type: TransactionType,
-    amount: Decimal | None = None,
+    transaction_type: str,
+    cash_amount: float,
+    timestamp: datetime,
     symbol: str | None = None,
     quantity: int | None = None,
-    price: Decimal | None = None,
-    notes: str = "",
+    price: float | None = None,
+    note: str = "",
 ) -> Transaction:
-    ...
+    """
+    Create and append a transaction.
+    """
 ```
 
----
-
-## `_filter_transactions`
-
 ```python
-def _filter_transactions(
-    self,
-    transactions: list[Transaction],
-    as_of: datetime | None = None,
-    transaction_id: int | None = None,
-) -> list[Transaction]:
-    ...
-```
-
----
-
-## `_reconstruct_state`
-
-```python
-def _reconstruct_state(
+def _transactions_up_to(
     self,
     account: Account,
-    as_of: datetime | None = None,
-    transaction_id: int | None = None,
-) -> tuple[Decimal, dict[str, int], Decimal, Decimal]:
-    ...
+    as_of: datetime | None,
+) -> list[Transaction]:
+    """
+    Return transactions up to as_of.
+    """
 ```
-
-### Return Value
-
-```text
-cash_balance, holdings, initial_deposit, net_cash_contributions
-```
-
-### Behavior
-
-Replay transactions from the beginning through the requested cutoff.
-
----
-
-## `_calculate_holdings_value`
 
 ```python
-def _calculate_holdings_value(
+def _compute_holdings_from_transactions(
     self,
-    holdings: dict[str, int],
-) -> tuple[Decimal, list[HoldingReportRow]]:
-    ...
+    transactions: list[Transaction],
+) -> dict[str, int]:
+    """
+    Compute holdings from buy and sell transactions.
+    """
 ```
-
----
-
-# Formatting Helper Functions for Frontend
-
-These should live in `backend.py` or `app.py`. Prefer `app.py` for UI formatting, but backend can provide simple serializers if useful.
-
-## `format_money`
 
 ```python
-def format_money(value: Decimal | None) -> str:
-    ...
+def _compute_cash_balance_from_transactions(
+    self,
+    transactions: list[Transaction],
+) -> float:
+    """
+    Compute cash balance from transaction cash_amount values.
+    """
 ```
-
----
-
-## `format_percent`
 
 ```python
-def format_percent(value: Decimal | None) -> str:
-    ...
+def _compute_net_cash_contributions(
+    self,
+    transactions: list[Transaction],
+) -> float:
+    """
+    Compute net cash contributions.
+
+    Include:
+    - CREATE cash_amount
+    - DEPOSIT cash_amount
+    - WITHDRAW cash_amount, which is negative
+
+    Exclude:
+    - BUY
+    - SELL
+    """
 ```
 
 ---
 
-## `transaction_to_row`
+# Formatting Helpers for UI
+
+Backend engineer may provide simple conversion helpers to keep frontend clean.
 
 ```python
-def transaction_to_row(transaction: Transaction) -> list[str | int | float]:
-    ...
+def account_to_row(account: Account) -> list[str | float]:
+    """
+    Convert account to table row.
+    """
 ```
-
----
-
-## `holding_to_row`
 
 ```python
-def holding_to_row(holding: HoldingReportRow) -> list[str | int | float]:
-    ...
+def transactions_to_rows(transactions: list[Transaction]) -> list[list[str | int | float]]:
+    """
+    Convert transactions to rows suitable for gr.Dataframe.
+    """
 ```
 
+```python
+def holdings_to_rows(snapshot: PortfolioSnapshot) -> list[list[str | int | float]]:
+    """
+    Convert holdings to rows suitable for gr.Dataframe.
+    """
+```
+
+```python
+def snapshot_to_summary(snapshot: PortfolioSnapshot) -> str:
+    """
+    Convert portfolio snapshot to Markdown summary.
+    """
+```
+
+These are optional but recommended.
+
 ---
 
-# Module: `app.py`
+# Frontend Design
 
-## Responsibility
+## File: `app.py`
 
-The frontend module provides a Gradio 6 web app.
+### Responsibility
 
-It should import and use `TradingService` from `backend.py`.
+Build a Gradio app that allows users to interact with the backend.
 
-The Gradio app should be simple and functional, not over-engineered.
+The app should:
+
+- Create account.
+- Select existing account.
+- Deposit funds.
+- Withdraw funds.
+- Buy shares.
+- Sell shares.
+- View holdings.
+- View profit/loss.
+- View transaction history.
+- Refresh all visible account data after each operation.
 
 ---
 
-# Gradio 6 API Guidance for Frontend Engineer
+# Gradio 6 API Guidance
 
-Use Gradio 6 Blocks API.
+The frontend engineer must use Gradio 6-compatible APIs.
 
-Required import:
+## Imports
 
 ```python
 import gradio as gr
+from trading_backend import AccountManager
 ```
 
-App structure signature:
-
-```python
-def build_app() -> gr.Blocks:
-    ...
-```
-
-Launch signature:
-
-```python
-if __name__ == "__main__":
-    build_app().launch()
-```
+## Blocks
 
 Use:
 
@@ -731,998 +827,833 @@ with gr.Blocks(title="Trading Simulation Account Manager") as demo:
     ...
 ```
 
-## Event Listeners
+Then:
 
-Use `.click(...)` on buttons.
+```python
+if __name__ == "__main__":
+    demo.launch()
+```
 
-Signature pattern:
+Optional launch configuration:
+
+```python
+demo.launch(
+    server_name="127.0.0.1",
+    server_port=7860,
+    show_error=True,
+)
+```
+
+Do not rely on old Gradio APIs removed in Gradio 6.
+
+---
+
+## Gradio State
+
+Use `gr.State` to store the backend manager instance for the user session.
+
+```python
+manager_state = gr.State(value=AccountManager())
+```
+
+Important Gradio 6 behavior:
+
+- `gr.State` is hidden.
+- It must be passed as both input and output if the function returns an updated state.
+- Event handlers can also mutate the manager object in place and return it as the state output.
+- State values must be deepcopy-compatible.
+
+Recommended event pattern:
 
 ```python
 button.click(
     fn=handler_function,
-    inputs=[input_component_1, input_component_2],
-    outputs=[output_component_1, output_component_2],
+    inputs=[manager_state, other_input],
+    outputs=[manager_state, output_component_1, output_component_2],
 )
 ```
 
-For one input or one output, Gradio accepts either the component directly or a list. Prefer lists for consistency.
+---
 
-Important Gradio 6 behavior:
+## Component Constructor Notes for Gradio 6
 
-- If there is one output, the handler should return the value directly.
-- If there are multiple outputs, return a tuple or list in the exact same order as `outputs`.
-- Inputs are passed as positional arguments in the same order as `inputs`.
+### `gr.Number`
 
-## Dataframe Changes in Gradio 6
+Use:
 
-Gradio 6 changed `gr.Dataframe` row/column sizing.
+```python
+gr.Number(
+    label="Amount",
+    value=0,
+    precision=2,
+    minimum=0,
+    step=1,
+)
+```
 
-Do **not** use old Gradio 5 style:
+Relevant Gradio 6 signature supports:
+
+```python
+gr.Number(
+    value=None,
+    label=None,
+    placeholder=None,
+    precision=None,
+    minimum=None,
+    maximum=None,
+    step=1,
+    interactive=None,
+)
+```
+
+### `gr.Textbox`
+
+Use:
+
+```python
+gr.Textbox(label="Owner Name")
+```
+
+For read-only output:
+
+```python
+gr.Textbox(label="Status", interactive=False)
+```
+
+### `gr.Dropdown`
+
+Use a dropdown for account selection and symbols.
+
+For symbols:
+
+```python
+gr.Dropdown(
+    choices=["AAPL", "TSLA", "GOOGL"],
+    label="Symbol",
+    value="AAPL",
+)
+```
+
+For accounts, choices need to be refreshed after account creation.
+
+In Gradio 6, update components by returning a new component instance or update object as supported by installed Gradio. Safer design approach:
+
+- Return `gr.Dropdown(choices=..., value=...)` for dropdown output updates.
+
+Example handler output type:
+
+```python
+return manager, gr.Dropdown(choices=account_choices, value=selected_account_id), status_text, ...
+```
+
+### `gr.Dataframe`
+
+Use Gradio 6 parameters.
+
+Do not use old Gradio 5 tuple forms like:
 
 ```python
 row_count=(5, "dynamic")
 col_count=(3, "fixed")
 ```
 
-Use Gradio 6 style:
+In Gradio 6, use:
 
 ```python
 gr.Dataframe(
-    headers=["Column A", "Column B"],
+    headers=["Symbol", "Quantity", "Price", "Market Value"],
+    datatype=["str", "number", "number", "number"],
     row_count=0,
-    row_limits=None,
-    column_count=2,
-    column_limits=(2, 2),
+    column_count=4,
+    interactive=False,
+    buttons=["copy", "fullscreen"],
 )
 ```
 
-For fixed columns:
+Important Gradio 6 migration notes:
+
+- `show_copy_button=True` is removed.
+- `show_fullscreen_button=True` is removed.
+- Use:
 
 ```python
-column_count=4
-column_limits=(4, 4)
+buttons=["copy", "fullscreen"]
 ```
 
-For dynamic row counts:
+- `col_count` is replaced by `column_count`.
+- Fixed/dynamic tuple forms are replaced by:
+  - `row_count`
+  - `row_limits`
+  - `column_count`
+  - `column_limits`
+
+### Events
+
+Use:
 
 ```python
-row_count=0
-row_limits=None
+button.click(fn=handler, inputs=[...], outputs=[...])
 ```
 
-## Recommended Components
+Do not use deprecated event patterns.
 
-Use these component constructors:
+Inputs and outputs can be a single component or a list of components.
+
+---
+
+# UI Layout
+
+## Top-Level Components
 
 ```python
-gr.Markdown(...)
-gr.Textbox(label="...", value="...")
-gr.Number(label="...", value=...)
-gr.Dropdown(label="...", choices=[...])
-gr.Button("...")
-gr.Dataframe(...)
-gr.JSON(label="...")
-gr.Tabs()
-gr.Tab("...")
-gr.Row()
-gr.Column()
-gr.State(...)
+manager_state = gr.State(value=AccountManager())
 ```
-
-## Error Display
-
-Do not allow exceptions to crash the app.
-
-Each handler should catch backend `TradingError` and generic `Exception`.
-
-Return status text in a Markdown or Textbox component.
-
-Recommended status component:
 
 ```python
-status = gr.Markdown(label="Status")
+status_output = gr.Markdown()
 ```
 
-Handlers should return messages such as:
-
-```text
-✅ Account created successfully.
-❌ Error: Insufficient funds.
+```python
+account_dropdown = gr.Dropdown(
+    choices=[],
+    label="Selected Account",
+    interactive=True,
+)
 ```
 
 ---
 
-# Frontend App Layout
+## Section: Create Account
 
-## Global State
-
-Use one global service instance in `app.py`.
+Components:
 
 ```python
-service = TradingService()
+owner_name_input = gr.Textbox(label="Owner Name")
+initial_deposit_input = gr.Number(
+    label="Initial Deposit",
+    value=10000,
+    precision=2,
+    minimum=0,
+    step=100,
+)
+create_account_button = gr.Button("Create Account")
 ```
 
-Optional but recommended:
-
-```python
-DEFAULT_SYMBOLS = ["AAPL", "TSLA", "GOOGL"]
-```
-
----
-
-## Page Title
-
-```python
-gr.Markdown("# Trading Simulation Account Manager")
-```
-
----
-
-## Tab 1: Account
-
-### Components
-
-- `account_id_input`
-
-```python
-gr.Textbox(label="Account ID")
-```
-
-- `owner_name_input`
-
-```python
-gr.Textbox(label="Owner Name")
-```
-
-- `initial_deposit_input`
-
-```python
-gr.Number(label="Initial Deposit", value=10000)
-```
-
-- `create_account_button`
-
-```python
-gr.Button("Create Account")
-```
-
-- `account_status_output`
-
-```python
-gr.Markdown(label="Account Status")
-```
-
-- `account_summary_output`
-
-```python
-gr.JSON(label="Account Summary")
-```
-
-### Handler
+Handler:
 
 ```python
 def handle_create_account(
-    account_id: str,
+    manager: AccountManager,
     owner_name: str,
     initial_deposit: float,
-) -> tuple[str, dict]:
-    ...
+) -> tuple[
+    AccountManager,
+    gr.Dropdown,
+    str,
+    list[list[str | float]],
+    list[list[str | int | float]],
+    str,
+]:
+    """
+    Create account and refresh account dropdown, accounts table,
+    transactions table, and summary.
+    """
 ```
 
-### Outputs
+Outputs:
 
-```python
-[account_status_output, account_summary_output]
+```text
+manager_state
+account_dropdown
+status_output
+accounts_table
+transactions_table
+portfolio_summary
 ```
 
 ---
 
-## Tab 2: Cash
+## Section: Cash Operations
 
-### Components
-
-- `cash_account_id_input`
+Components:
 
 ```python
-gr.Textbox(label="Account ID")
+cash_amount_input = gr.Number(
+    label="Cash Amount",
+    value=1000,
+    precision=2,
+    minimum=0,
+    step=100,
+)
+deposit_button = gr.Button("Deposit")
+withdraw_button = gr.Button("Withdraw")
 ```
 
-- `cash_amount_input`
-
-```python
-gr.Number(label="Amount", value=1000)
-```
-
-- `deposit_button`
-
-```python
-gr.Button("Deposit")
-```
-
-- `withdraw_button`
-
-```python
-gr.Button("Withdraw")
-```
-
-- `cash_status_output`
-
-```python
-gr.Markdown(label="Cash Status")
-```
-
-- `cash_summary_output`
-
-```python
-gr.JSON(label="Updated Portfolio Summary")
-```
-
-### Handlers
+Handlers:
 
 ```python
 def handle_deposit(
+    manager: AccountManager,
     account_id: str,
     amount: float,
-) -> tuple[str, dict]:
-    ...
+) -> tuple[
+    AccountManager,
+    str,
+    list[list[str | int | float]],
+    list[list[str | int | float]],
+    str,
+]:
+    """
+    Deposit funds and refresh UI.
+    """
 ```
 
 ```python
 def handle_withdraw(
+    manager: AccountManager,
     account_id: str,
     amount: float,
-) -> tuple[str, dict]:
-    ...
+) -> tuple[
+    AccountManager,
+    str,
+    list[list[str | int | float]],
+    list[list[str | int | float]],
+    str,
+]:
+    """
+    Withdraw funds and refresh UI.
+    """
 ```
 
-### Outputs
+Outputs:
 
-```python
-[cash_status_output, cash_summary_output]
+```text
+manager_state
+status_output
+transactions_table
+holdings_table
+portfolio_summary
 ```
 
 ---
 
-## Tab 3: Trade
+## Section: Trade Operations
 
-### Components
-
-- `trade_account_id_input`
+Components:
 
 ```python
-gr.Textbox(label="Account ID")
-```
-
-- `symbol_input`
-
-Use dropdown to reduce invalid symbols:
-
-```python
-gr.Dropdown(
-    label="Symbol",
+symbol_dropdown = gr.Dropdown(
     choices=["AAPL", "TSLA", "GOOGL"],
+    label="Symbol",
     value="AAPL",
 )
+quantity_input = gr.Number(
+    label="Quantity",
+    value=1,
+    precision=0,
+    minimum=1,
+    step=1,
+)
+buy_button = gr.Button("Buy")
+sell_button = gr.Button("Sell")
 ```
 
-- `quantity_input`
-
-```python
-gr.Number(label="Quantity", value=1, precision=0)
-```
-
-- `buy_button`
-
-```python
-gr.Button("Buy")
-```
-
-- `sell_button`
-
-```python
-gr.Button("Sell")
-```
-
-- `trade_status_output`
-
-```python
-gr.Markdown(label="Trade Status")
-```
-
-- `trade_summary_output`
-
-```python
-gr.JSON(label="Updated Portfolio Summary")
-```
-
-### Handlers
+Handlers:
 
 ```python
 def handle_buy(
+    manager: AccountManager,
     account_id: str,
     symbol: str,
     quantity: float,
-) -> tuple[str, dict]:
-    ...
+) -> tuple[
+    AccountManager,
+    str,
+    list[list[str | int | float]],
+    list[list[str | int | float]],
+    str,
+]:
+    """
+    Buy shares and refresh UI.
+    """
 ```
 
 ```python
 def handle_sell(
+    manager: AccountManager,
     account_id: str,
     symbol: str,
     quantity: float,
-) -> tuple[str, dict]:
-    ...
+) -> tuple[
+    AccountManager,
+    str,
+    list[list[str | int | float]],
+    list[list[str | int | float]],
+    str,
+]:
+    """
+    Sell shares and refresh UI.
+    """
 ```
 
-### Notes
+Implementation notes:
 
-- Gradio `Number` may pass quantities as `float`.
+- `gr.Number` may pass quantity as `float`.
 - Convert quantity to `int` in handler.
-- Reject non-integer quantities before calling backend if desired.
+- Reject non-integer quantities in backend or handler.
+
+Outputs:
+
+```text
+manager_state
+status_output
+transactions_table
+holdings_table
+portfolio_summary
+```
 
 ---
 
-## Tab 4: Reports
+## Section: Portfolio Reports
 
-### Components
-
-- `report_account_id_input`
+Components:
 
 ```python
-gr.Textbox(label="Account ID")
+refresh_button = gr.Button("Refresh Reports")
 ```
 
-- `refresh_report_button`
-
 ```python
-gr.Button("Refresh Reports")
+portfolio_summary = gr.Markdown()
 ```
 
-- `portfolio_report_output`
-
 ```python
-gr.JSON(label="Portfolio Report")
-```
-
-- `holdings_table_output`
-
-```python
-gr.Dataframe(
+holdings_table = gr.Dataframe(
     headers=["Symbol", "Quantity", "Current Price", "Market Value"],
+    datatype=["str", "number", "number", "number"],
     row_count=0,
-    row_limits=None,
     column_count=4,
-    column_limits=(4, 4),
     interactive=False,
-    label="Holdings",
+    buttons=["copy", "fullscreen"],
 )
 ```
 
-- `transactions_table_output`
-
 ```python
-gr.Dataframe(
+transactions_table = gr.Dataframe(
     headers=[
-        "ID",
         "Timestamp",
         "Type",
         "Symbol",
         "Quantity",
         "Price",
-        "Amount",
+        "Cash Amount",
         "Cash Balance After",
-        "Notes",
+        "Note",
     ],
+    datatype=["str", "str", "str", "number", "number", "number", "number", "str"],
     row_count=0,
-    row_limits=None,
-    column_count=9,
-    column_limits=(9, 9),
+    column_count=8,
     interactive=False,
-    label="Transactions",
+    buttons=["copy", "fullscreen"],
 )
 ```
 
-- `report_status_output`
-
 ```python
-gr.Markdown(label="Report Status")
-```
-
-### Handler
-
-```python
-def handle_refresh_reports(
-    account_id: str,
-) -> tuple[str, dict, list[list], list[list]]:
-    ...
-```
-
-### Outputs
-
-```python
-[
-    report_status_output,
-    portfolio_report_output,
-    holdings_table_output,
-    transactions_table_output,
-]
-```
-
----
-
-## Optional Tab 5: As-Of Reports
-
-This is useful for satisfying “at any point in time”.
-
-### Components
-
-- `asof_account_id_input`
-
-```python
-gr.Textbox(label="Account ID")
-```
-
-- `asof_transaction_id_input`
-
-```python
-gr.Number(label="As of Transaction ID", precision=0)
-```
-
-- `asof_report_button`
-
-```python
-gr.Button("Generate As-Of Report")
-```
-
-- `asof_status_output`
-
-```python
-gr.Markdown(label="As-Of Status")
-```
-
-- `asof_portfolio_output`
-
-```python
-gr.JSON(label="As-Of Portfolio Report")
-```
-
-- `asof_holdings_output`
-
-```python
-gr.Dataframe(
-    headers=["Symbol", "Quantity", "Current Price", "Market Value"],
+accounts_table = gr.Dataframe(
+    headers=["Account ID", "Owner", "Created At", "Initial Deposit", "Cash Balance"],
+    datatype=["str", "str", "str", "number", "number"],
     row_count=0,
-    row_limits=None,
-    column_count=4,
-    column_limits=(4, 4),
+    column_count=5,
     interactive=False,
-    label="As-Of Holdings",
+    buttons=["copy", "fullscreen"],
 )
 ```
 
-### Handler
+Handler:
 
 ```python
-def handle_asof_report(
+def handle_refresh(
+    manager: AccountManager,
     account_id: str,
-    transaction_id: float,
-) -> tuple[str, dict, list[list]]:
-    ...
+) -> tuple[
+    str,
+    list[list[str | float]],
+    list[list[str | int | float]],
+    list[list[str | int | float]],
+]:
+    """
+    Refresh status, accounts table, transactions table, holdings table, and summary.
+    """
 ```
 
----
-
-# Frontend Serialization Helpers
-
-These live in `app.py`.
-
-## `portfolio_report_to_dict`
-
-```python
-def portfolio_report_to_dict(report: PortfolioReport) -> dict:
-    ...
-```
-
-Should return JSON-serializable values only.
-
-Convert `Decimal` and `datetime` to strings.
-
-Example shape:
+Outputs:
 
 ```text
-{
-    "account_id": "...",
-    "owner_name": "...",
-    "cash_balance": "1000.00",
-    "holdings_value": "500.00",
-    "total_value": "1500.00",
-    "initial_deposit": "1000.00",
-    "net_cash_contributions": "1000.00",
-    "profit_loss": "500.00",
-    "profit_loss_percent": "50.00%",
-    "as_of": "2026-10-22T12:00:00"
-}
+status_output
+accounts_table
+transactions_table
+holdings_table
+portfolio_summary
 ```
 
 ---
 
-## `holdings_to_rows`
+# Frontend Helper Functions
+
+Define these in `app.py`.
 
 ```python
-def holdings_to_rows(holdings: list[HoldingReportRow]) -> list[list]:
-    ...
+def format_account_choice(account_id: str, owner_name: str) -> str:
+    """
+    Return display string for account dropdown if needed.
+    """
 ```
 
-Return rows matching:
+Simpler recommended approach:
+
+- Use account IDs directly as dropdown values.
+- Show details in accounts table.
+
+```python
+def get_account_choices(manager: AccountManager) -> list[str]:
+    """
+    Return list of account IDs for dropdown.
+    """
+```
+
+```python
+def build_accounts_rows(manager: AccountManager) -> list[list[str | float]]:
+    """
+    Build rows for accounts table.
+    """
+```
+
+```python
+def build_transactions_rows(
+    manager: AccountManager,
+    account_id: str | None,
+) -> list[list[str | int | float]]:
+    """
+    Build rows for transactions table.
+    """
+```
+
+```python
+def build_holdings_rows(
+    manager: AccountManager,
+    account_id: str | None,
+) -> list[list[str | int | float]]:
+    """
+    Build rows for holdings table.
+    """
+```
+
+```python
+def build_portfolio_summary(
+    manager: AccountManager,
+    account_id: str | None,
+) -> str:
+    """
+    Build Markdown summary of cash balance, holdings value, total value,
+    net cash contributions, and profit/loss.
+    """
+```
+
+```python
+def safe_status_message(error: Exception) -> str:
+    """
+    Convert backend exception to a user-friendly status message.
+    """
+```
+
+---
+
+# UI Error Handling
+
+Every handler should catch backend exceptions and return a user-friendly status message without crashing the Gradio app.
+
+Example status strings:
 
 ```text
-["Symbol", "Quantity", "Current Price", "Market Value"]
+✅ Account created: <account_id>
+✅ Deposited $1,000.00
+✅ Withdrew $500.00
+✅ Bought 3 AAPL at $150.00
+✅ Sold 1 TSLA at $250.00
+❌ Insufficient funds
+❌ Insufficient holdings
+❌ Please select an account
+❌ Unsupported symbol
 ```
 
 ---
 
-## `transactions_to_rows`
+# Unit Test Design
+
+## File: `test_trading_backend.py`
+
+### Responsibility
+
+Test backend behavior only.
+
+Do not test Gradio UI.
+
+Use Python standard library only.
+
+Recommended test framework: `unittest`.
+
+---
+
+# Test Fixtures
+
+Use a deterministic price lookup function in tests.
 
 ```python
-def transactions_to_rows(transactions: list[Transaction]) -> list[list]:
-    ...
+def fixed_price_lookup(symbol: str) -> float:
+    """
+    Return deterministic prices for tests.
+    """
 ```
 
-Return rows matching:
+Suggested values:
 
 ```text
-[
-    "ID",
-    "Timestamp",
-    "Type",
-    "Symbol",
-    "Quantity",
-    "Price",
-    "Amount",
-    "Cash Balance After",
-    "Notes",
-]
+AAPL  -> 100.00
+TSLA  -> 200.00
+GOOGL -> 1000.00
 ```
 
----
+For unknown symbols, raise `ValueError`.
 
-## `empty_report`
+Each test should instantiate a fresh manager:
 
 ```python
-def empty_report() -> dict:
-    ...
+manager = AccountManager(price_lookup=fixed_price_lookup)
 ```
 
 ---
 
-## `empty_holdings_rows`
-
-```python
-def empty_holdings_rows() -> list[list]:
-    ...
-```
-
----
-
-## `empty_transaction_rows`
-
-```python
-def empty_transaction_rows() -> list[list]:
-    ...
-```
-
----
-
-# Module: `test_backend.py`
-
-## Responsibility
-
-Unit tests for `backend.py`.
-
-Use standard library `unittest`.
-
-No Gradio tests are required.
-
----
-
-# Test Data
-
-Use an injected deterministic price provider:
-
-```python
-def fixed_price_provider(symbol: str) -> Decimal:
-    ...
-```
-
-Suggested prices:
-
-| Symbol | Price |
-|---|---:|
-| AAPL | 100.00 |
-| TSLA | 200.00 |
-| GOOGL | 1000.00 |
-
-Use an injected deterministic clock where needed.
-
----
-
-# Required Test Cases
+# Required Unit Tests
 
 ## Account Creation
 
-### `test_create_account_success`
+```python
+def test_create_account_with_initial_deposit(self) -> None:
+    """
+    Account has expected owner, initial deposit, cash balance, and create transaction.
+    """
+```
 
-Verify:
+```python
+def test_create_account_rejects_negative_initial_deposit(self) -> None:
+    """
+    Negative initial deposit raises InvalidAmountError.
+    """
+```
 
-- Account is created.
-- Cash balance equals initial deposit.
-- Initial deposit stored.
-- Holdings empty.
-- One transaction exists.
-- Transaction type is `CREATE_ACCOUNT`.
-
----
-
-### `test_create_account_rejects_duplicate_id`
-
-Verify:
-
-- Creating an account with an existing id raises `AccountAlreadyExistsError`.
-
----
-
-### `test_create_account_rejects_non_positive_initial_deposit`
-
-Verify:
-
-- Zero and negative initial deposit raise `ValidationError`.
-
----
-
-### `test_create_account_rejects_empty_owner_name`
-
-Verify:
-
-- Blank owner name raises `ValidationError`.
+```python
+def test_create_account_rejects_empty_owner_name(self) -> None:
+    """
+    Empty owner name raises ValueError.
+    """
+```
 
 ---
 
 ## Deposits
 
-### `test_deposit_success`
+```python
+def test_deposit_increases_cash_balance(self) -> None:
+    """
+    Deposit updates cash balance and records transaction.
+    """
+```
 
-Verify:
-
-- Cash balance increases.
-- Deposit transaction is recorded.
-
----
-
-### `test_deposit_rejects_non_positive_amount`
-
-Verify:
-
-- Zero and negative deposits raise `ValidationError`.
+```python
+def test_deposit_rejects_zero_or_negative_amount(self) -> None:
+    """
+    Zero and negative deposits raise InvalidAmountError.
+    """
+```
 
 ---
 
 ## Withdrawals
 
-### `test_withdraw_success`
+```python
+def test_withdraw_decreases_cash_balance(self) -> None:
+    """
+    Withdrawal updates cash balance and records transaction.
+    """
+```
 
-Verify:
+```python
+def test_withdraw_rejects_insufficient_funds(self) -> None:
+    """
+    Cannot withdraw more than cash balance.
+    """
+```
 
-- Cash balance decreases.
-- Withdrawal transaction is recorded.
-
----
-
-### `test_withdraw_rejects_insufficient_funds`
-
-Verify:
-
-- Withdrawal greater than cash balance raises `InsufficientFundsError`.
-- Cash balance remains unchanged.
-
----
-
-### `test_withdraw_rejects_non_positive_amount`
-
-Verify:
-
-- Zero and negative withdrawal amounts raise `ValidationError`.
+```python
+def test_withdraw_rejects_zero_or_negative_amount(self) -> None:
+    """
+    Zero and negative withdrawals raise InvalidAmountError.
+    """
+```
 
 ---
 
-## Buying Shares
+## Buying
 
-### `test_buy_success`
+```python
+def test_buy_decreases_cash_and_increases_holdings(self) -> None:
+    """
+    Buying shares subtracts cash and increases holdings.
+    """
+```
 
-Setup:
+```python
+def test_buy_rejects_insufficient_funds(self) -> None:
+    """
+    Cannot buy more shares than cash allows.
+    """
+```
 
-- Create account with 1000.
-- Price provider returns AAPL = 100.
+```python
+def test_buy_rejects_invalid_quantity(self) -> None:
+    """
+    Quantity must be positive integer.
+    """
+```
 
-Verify:
-
-- Buying 3 AAPL succeeds.
-- Cash decreases by 300.
-- Holdings AAPL equals 3.
-- Buy transaction is recorded with price 100 and amount 300.
-
----
-
-### `test_buy_rejects_insufficient_funds`
-
-Setup:
-
-- Create account with 100.
-- AAPL price 100.
-
-Verify:
-
-- Buying 2 AAPL raises `InsufficientFundsError`.
-- Cash unchanged.
-- Holdings unchanged.
-
----
-
-### `test_buy_rejects_non_positive_quantity`
-
-Verify:
-
-- Quantity 0 and negative quantity raise `ValidationError`.
+```python
+def test_buy_rejects_unknown_symbol(self) -> None:
+    """
+    Unknown symbol raises UnknownSymbolError.
+    """
+```
 
 ---
 
-### `test_buy_rejects_unknown_symbol`
+## Selling
 
-Verify:
+```python
+def test_sell_increases_cash_and_decreases_holdings(self) -> None:
+    """
+    Selling shares adds cash and reduces holdings.
+    """
+```
 
-- Unknown symbol raises `UnknownSymbolError`.
+```python
+def test_sell_rejects_insufficient_holdings(self) -> None:
+    """
+    Cannot sell more shares than owned.
+    """
+```
 
----
+```python
+def test_sell_rejects_invalid_quantity(self) -> None:
+    """
+    Quantity must be positive integer.
+    """
+```
 
-## Selling Shares
-
-### `test_sell_success`
-
-Setup:
-
-- Create account with 1000.
-- Buy 5 AAPL at 100.
-- Sell 2 AAPL.
-
-Verify:
-
-- Holdings AAPL equals 3.
-- Cash increases by 200.
-- Sell transaction is recorded.
-
----
-
-### `test_sell_rejects_insufficient_shares`
-
-Verify:
-
-- Selling more shares than held raises `InsufficientSharesError`.
-- Holdings unchanged.
-- Cash unchanged.
+```python
+def test_sell_rejects_unknown_symbol(self) -> None:
+    """
+    Unknown symbol raises UnknownSymbolError.
+    """
+```
 
 ---
 
-### `test_sell_removes_zero_quantity_holding`
+## Portfolio Snapshot
 
-Verify:
+```python
+def test_portfolio_snapshot_calculates_total_value(self) -> None:
+    """
+    Snapshot total value equals cash plus holdings market value.
+    """
+```
 
-- Buy 1 AAPL.
-- Sell 1 AAPL.
-- AAPL no longer appears in holdings.
+```python
+def test_profit_loss_uses_net_cash_contributions(self) -> None:
+    """
+    Profit/loss equals total value minus deposits plus withdrawals adjustment.
+    """
+```
 
----
+Suggested scenario:
 
-### `test_sell_rejects_non_positive_quantity`
+```text
+Initial deposit: 1000
+Buy 5 AAPL at 100 = 500
+Cash = 500
+Holdings value = 500
+Total value = 1000
+Net cash contributions = 1000
+P/L = 0
+```
 
-Verify:
+Then if price lookup is changed or custom manager uses different current price, validate P/L changes accordingly.
 
-- Quantity 0 and negative quantity raise `ValidationError`.
+Since price lookup is fixed in a manager instance, another test can use:
 
----
+```text
+Initial deposit: 1000
+AAPL price = 100
+Buy 5 AAPL
+Then use a separate price lookup or mutable price lookup returning AAPL = 120
+Snapshot:
+Cash = 500
+Holdings value = 600
+Total value = 1100
+P/L = 100
+```
 
-## Portfolio Reports
-
-### `test_portfolio_report_cash_only`
-
-Setup:
-
-- Create account with 1000.
-
-Verify:
-
-- Cash balance 1000.
-- Holdings value 0.
-- Total value 1000.
-- Net cash contributions 1000.
-- Profit/loss 0.
-
----
-
-### `test_portfolio_report_after_buy`
-
-Setup:
-
-- Create account with 1000.
-- Buy 2 AAPL at 100.
-
-Verify:
-
-- Cash 800.
-- Holdings value 200.
-- Total value 1000.
-- Profit/loss 0 when price remains 100.
+If implementing mutable prices is too much for tests, test zero P/L with fixed prices.
 
 ---
 
-### `test_portfolio_report_profit_when_price_increases`
+## Historical Reports
 
-Use mutable/injected price provider.
+```python
+def test_holdings_as_of_timestamp(self) -> None:
+    """
+    Holdings at a prior timestamp exclude later trades.
+    """
+```
 
-Setup:
+```python
+def test_cash_balance_as_of_timestamp(self) -> None:
+    """
+    Cash balance at a prior timestamp excludes later transactions.
+    """
+```
 
-- AAPL price 100.
-- Create account with 1000.
-- Buy 2 AAPL.
-- Change AAPL price to 150.
+```python
+def test_transactions_as_of_timestamp(self) -> None:
+    """
+    Transaction listing at a prior timestamp excludes later transactions.
+    """
+```
 
-Verify:
+Use explicit timestamps:
 
-- Cash 800.
-- Holdings value 300.
-- Total value 1100.
-- Profit/loss 100.
-
----
-
-### `test_portfolio_report_loss_when_price_decreases`
-
-Setup:
-
-- AAPL price 100.
-- Create account with 1000.
-- Buy 2 AAPL.
-- Change AAPL price to 50.
-
-Verify:
-
-- Cash 800.
-- Holdings value 100.
-- Total value 900.
-- Profit/loss -100.
-
----
-
-## Net Contributions
-
-### `test_profit_loss_uses_net_cash_contributions`
-
-Setup:
-
-- Create account with 1000.
-- Deposit 500.
-- Withdraw 200.
-
-Verify:
-
-- Net cash contributions 1300.
-- If no market movement, profit/loss is 0.
-
----
-
-## Holdings Report
-
-### `test_get_holdings_returns_market_values`
-
-Setup:
-
-- Buy AAPL and TSLA.
-
-Verify:
-
-- Holdings report has correct symbols, quantities, prices, market values.
-
----
-
-## Transaction History
-
-### `test_list_transactions_returns_all_transactions_in_order`
-
-Setup:
-
-- Create account.
-- Deposit.
-- Buy.
-- Sell.
-- Withdraw.
-
-Verify:
-
-- Transactions returned in expected order.
-- Transaction ids are increasing.
-
----
-
-## As-Of Reporting
-
-### `test_list_transactions_as_of_transaction_id`
-
-Setup:
-
-- Multiple transactions.
-
-Verify:
-
-- Passing transaction id returns only transactions up to that id.
-
----
-
-### `test_holdings_as_of_transaction_id`
-
-Setup:
-
-- Create account.
-- Buy 5 AAPL.
-- Sell 2 AAPL.
-
-Verify:
-
-- As of buy transaction id, holdings AAPL is 5.
-- As of sell transaction id, holdings AAPL is 3.
-
----
-
-### `test_portfolio_report_as_of_transaction_id`
-
-Setup:
-
-- Create account with 1000.
-- Buy 5 AAPL at 100.
-- Sell 2 AAPL at 100.
-
-Verify:
-
-- As-of portfolio report correctly reconstructs cash and holdings.
+```python
+t1 = datetime(2024, 1, 1, 9, 0, 0)
+t2 = datetime(2024, 1, 2, 9, 0, 0)
+t3 = datetime(2024, 1, 3, 9, 0, 0)
+```
 
 ---
 
 ## Account Lookup
 
-### `test_get_missing_account_raises`
-
-Verify:
-
-- Unknown account id raises `AccountNotFoundError`.
-
----
-
-# README.md
-
-## Responsibility
-
-Small usage guide.
-
-Include:
-
-```text
-# Trading Simulation Account Manager
-
-## Run app
-
-uv run python app.py
-
-## Run tests
-
-uv run python -m unittest test_backend.py
+```python
+def test_get_unknown_account_raises(self) -> None:
+    """
+    Unknown account ID raises AccountNotFoundError.
+    """
 ```
 
 ---
@@ -1731,138 +1662,306 @@ uv run python -m unittest test_backend.py
 
 ## backend_engineer
 
-Owns `backend.py`.
+### Files
 
-### Deliverables
+```text
+prices.py
+trading_backend.py
+```
 
-- All backend models.
-- All backend exceptions.
-- `get_share_price(symbol)`.
-- `TradingService`.
-- All validation logic.
-- Current and as-of reporting.
-- Decimal-safe money calculations.
-- No Gradio dependencies in backend.
+### Responsibilities
 
-### Implementation Checklist
+Implement:
 
-- [ ] Create `TransactionType`.
-- [ ] Create dataclasses:
-  - [ ] `Transaction`
-  - [ ] `Account`
-  - [ ] `HoldingReportRow`
-  - [ ] `PortfolioReport`
-- [ ] Create exception hierarchy.
-- [ ] Implement fixed `get_share_price`.
-- [ ] Implement `TradingService.__init__`.
-- [ ] Implement account methods.
-- [ ] Implement cash methods.
-- [ ] Implement trade methods.
-- [ ] Implement reporting methods.
-- [ ] Implement reconstruction helper for as-of reports.
-- [ ] Ensure all money is handled as `Decimal`.
-- [ ] Ensure invalid operations do not mutate state.
-- [ ] Ensure transaction ids are monotonically increasing.
+- Fixed share price lookup.
+- Backend domain models.
+- Backend exceptions.
+- In-memory account manager.
+- Account creation.
+- Deposits.
+- Withdrawals.
+- Buys.
+- Sells.
+- Holdings computation.
+- Cash balance computation.
+- Portfolio snapshot computation.
+- Profit/loss computation.
+- Transaction listing.
+- Historical `as_of` support.
+- UI formatting helper functions if desired.
+
+### Required Public API
+
+The backend must expose at least:
+
+```python
+class AccountManager:
+    def __init__(self, price_lookup: Callable[[str], float] | None = None) -> None: ...
+
+    def create_account(
+        self,
+        owner_name: str,
+        initial_deposit: float = 0.0,
+        timestamp: datetime | None = None,
+    ) -> Account: ...
+
+    def get_account(self, account_id: str) -> Account: ...
+
+    def list_accounts(self) -> list[Account]: ...
+
+    def deposit(
+        self,
+        account_id: str,
+        amount: float,
+        timestamp: datetime | None = None,
+    ) -> Transaction: ...
+
+    def withdraw(
+        self,
+        account_id: str,
+        amount: float,
+        timestamp: datetime | None = None,
+    ) -> Transaction: ...
+
+    def buy(
+        self,
+        account_id: str,
+        symbol: str,
+        quantity: int,
+        timestamp: datetime | None = None,
+    ) -> Transaction: ...
+
+    def sell(
+        self,
+        account_id: str,
+        symbol: str,
+        quantity: int,
+        timestamp: datetime | None = None,
+    ) -> Transaction: ...
+
+    def get_holdings(
+        self,
+        account_id: str,
+        as_of: datetime | None = None,
+    ) -> dict[str, int]: ...
+
+    def get_cash_balance(
+        self,
+        account_id: str,
+        as_of: datetime | None = None,
+    ) -> float: ...
+
+    def get_portfolio_snapshot(
+        self,
+        account_id: str,
+        as_of: datetime | None = None,
+    ) -> PortfolioSnapshot: ...
+
+    def list_transactions(
+        self,
+        account_id: str,
+        as_of: datetime | None = None,
+    ) -> list[Transaction]: ...
+```
+
+### Backend Acceptance Criteria
+
+- All unit tests pass.
+- Invalid operations raise clear custom exceptions.
+- Account manager has no dependency on Gradio.
+- Historical reporting works using transaction timestamps.
+- Profit/loss is calculated as total account value minus net cash contributions.
+- Symbols are normalized to uppercase.
 
 ---
 
 ## frontend_engineer
 
-Owns `app.py`.
+### Files
 
-### Deliverables
+```text
+app.py
+```
 
-- Gradio 6 Blocks app.
-- Tabs for:
-  - Account creation.
-  - Deposits/withdrawals.
-  - Buy/sell trades.
-  - Reports.
-  - Optional as-of reports by transaction id.
-- Handler functions that call `TradingService`.
-- User-friendly success/error messages.
-- JSON portfolio summaries.
-- Dataframe holdings and transaction tables.
+### Responsibilities
 
-### Implementation Checklist
+Implement a Gradio 6 app using the backend.
 
-- [ ] Import `gradio as gr`.
-- [ ] Import backend service and model types.
-- [ ] Create global `TradingService`.
-- [ ] Implement formatting helpers.
-- [ ] Implement `portfolio_report_to_dict`.
-- [ ] Implement `holdings_to_rows`.
-- [ ] Implement `transactions_to_rows`.
-- [ ] Implement all event handlers.
-- [ ] Use `.click(fn=..., inputs=[...], outputs=[...])`.
-- [ ] Catch backend `TradingError` in every handler.
-- [ ] Use Gradio 6 `Dataframe` parameters:
-  - [ ] `row_count`
-  - [ ] `row_limits`
-  - [ ] `column_count`
-  - [ ] `column_limits`
-- [ ] Do not use old `col_count` or tuple-style `row_count`.
-- [ ] Add `if __name__ == "__main__": build_app().launch()`.
+### Required Features
+
+- Create account form.
+- Account selector dropdown.
+- Deposit form.
+- Withdraw form.
+- Buy form.
+- Sell form.
+- Accounts table.
+- Holdings table.
+- Transactions table.
+- Portfolio summary.
+- Refresh button.
+- Clear user-facing success/error messages.
+
+### Required Gradio Components
+
+Use:
+
+```python
+gr.Blocks
+gr.State
+gr.Markdown
+gr.Textbox
+gr.Number
+gr.Dropdown
+gr.Button
+gr.Dataframe
+gr.Row
+gr.Column
+gr.Tab or gr.Accordion if helpful
+```
+
+### Required Handler Signatures
+
+```python
+def handle_create_account(
+    manager: AccountManager,
+    owner_name: str,
+    initial_deposit: float,
+) -> tuple:
+    ...
+```
+
+```python
+def handle_deposit(
+    manager: AccountManager,
+    account_id: str,
+    amount: float,
+) -> tuple:
+    ...
+```
+
+```python
+def handle_withdraw(
+    manager: AccountManager,
+    account_id: str,
+    amount: float,
+) -> tuple:
+    ...
+```
+
+```python
+def handle_buy(
+    manager: AccountManager,
+    account_id: str,
+    symbol: str,
+    quantity: float,
+) -> tuple:
+    ...
+```
+
+```python
+def handle_sell(
+    manager: AccountManager,
+    account_id: str,
+    symbol: str,
+    quantity: float,
+) -> tuple:
+    ...
+```
+
+```python
+def handle_refresh(
+    manager: AccountManager,
+    account_id: str,
+) -> tuple:
+    ...
+```
+
+### Frontend Acceptance Criteria
+
+- App launches with `uv run python app.py`.
+- Creating an account updates account dropdown and tables.
+- Deposit/withdraw/buy/sell operations update:
+  - Status message.
+  - Holdings table.
+  - Transactions table.
+  - Portfolio summary.
+- Invalid operations show friendly errors and do not crash the app.
+- Gradio 6-compatible APIs are used.
+- `gr.Dataframe` uses `column_count`, not deprecated `col_count`.
+- `gr.Dataframe` uses `buttons=["copy", "fullscreen"]`, not removed `show_copy_button` or `show_fullscreen_button`.
 
 ---
 
 ## test_engineer
 
-Owns `test_backend.py`.
-
-### Deliverables
-
-- Unit tests for backend only.
-- Use `unittest`.
-- Use deterministic injected price provider.
-- Test both success and failure paths.
-- Test reports and transaction history.
-
-### Implementation Checklist
-
-- [ ] Create test class for account creation.
-- [ ] Create test class for cash operations.
-- [ ] Create test class for trades.
-- [ ] Create test class for portfolio reports.
-- [ ] Create test class for as-of reports.
-- [ ] Create test class for transaction history.
-- [ ] Verify failed operations do not mutate account state.
-- [ ] Verify exact exception types.
-- [ ] Verify Decimal values exactly.
-- [ ] Ensure tests run with:
+### Files
 
 ```text
-uv run python -m unittest test_backend.py
+test_trading_backend.py
 ```
+
+### Responsibilities
+
+Implement backend unit tests using Python standard library `unittest`.
+
+### Scope
+
+Test only:
+
+```text
+prices.py
+trading_backend.py
+```
+
+Do not test:
+
+```text
+app.py
+Gradio UI
+```
+
+### Required Test Command
+
+The tests should run with:
+
+```bash
+uv run python -m unittest test_trading_backend.py
+```
+
+or:
+
+```bash
+uv run python -m unittest
+```
+
+### Test Acceptance Criteria
+
+- Tests are deterministic.
+- Tests use custom price lookup where useful.
+- Tests cover all validation rules.
+- Tests cover all major account operations.
+- Tests cover historical `as_of` reports.
+- Tests verify transaction records are created.
+- Tests verify profit/loss calculation.
+- Tests pass without launching Gradio.
 
 ---
 
-# Acceptance Criteria
+# End-to-End Acceptance Criteria
 
-The system is complete when:
+The complete system is successful when:
 
-- Users can create accounts from the Gradio UI.
-- Users can deposit and withdraw funds.
-- Users cannot withdraw more cash than available.
-- Users can buy and sell supported shares.
-- Users cannot buy shares they cannot afford.
-- Users cannot sell shares they do not own.
-- Holdings are accurately tracked.
-- Portfolio value is accurately calculated.
-- Profit/loss is accurately calculated against net cash contributions.
-- Users can view transaction history.
-- Users can view current holdings.
-- Users can view current profit/loss.
-- Users can generate an as-of report by transaction id.
-- Backend unit tests pass.
-- App launches with:
-
-```text
-uv run python app.py
-```
-
-- Tests run with:
-
-```text
-uv run python -m unittest test_backend.py
-```
+1. Backend unit tests pass.
+2. `uv run python app.py` launches the Gradio app.
+3. User can create an account with an initial deposit.
+4. User can deposit funds.
+5. User can withdraw funds only when enough cash exists.
+6. User can buy shares only when enough cash exists.
+7. User can sell shares only when enough holdings exist.
+8. User can view holdings.
+9. User can view transactions.
+10. User can view account value and profit/loss.
+11. Historical backend reports work through `as_of` timestamps.
+12. Unsupported symbols are rejected.
+13. No third-party libraries are required beyond Gradio.
