@@ -6,6 +6,10 @@ __pycache__/
 *.py[cod]
 .venv/
 sandbox/.venv/
+sandbox/__pycache__/
+
+# Per-run reports and app copies written by the crew
+runs/
 
 # OS / editor
 .DS_Store

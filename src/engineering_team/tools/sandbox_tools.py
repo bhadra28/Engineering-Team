@@ -63,6 +63,25 @@ def write_sandbox_file(filename: str, content: str) -> str:
     return f"Wrote {len(content)} characters to {filename}."
 
 
+def docker_uv_run(args: list[str], timeout: int = 300) -> subprocess.CompletedProcess:
+    """`uv run <args>` inside an ephemeral Docker container with the sandbox mounted as the working directory.
+    Shared by the agents' run tool and the quality gates, so both execute code the same way."""
+    return subprocess.run(
+        [
+            "docker", "run", "--rm",
+            "-v", f"{SANDBOX_DIR}:/workspace",
+            "-w", "/workspace",
+            "ghcr.io/astral-sh/uv:python3.13-bookworm-slim", #this is uv's own official image, comes with uv pre-installed
+            "uv", "run", *args, #uses python's virtual environment with dependencies
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout,
+    )
+
+
 @tool("Run Sandbox Python File")
 def run_sandbox_python(filename: str) -> str:
     """
@@ -81,20 +100,7 @@ def run_sandbox_python(filename: str) -> str:
         A labeled block containing the exit code, stdout, and stderr.
     """
     try:
-        result = subprocess.run(
-            [
-                "docker", "run", "--rm",
-                "-v", f"{SANDBOX_DIR}:/workspace",
-                "-w", "/workspace",
-                "ghcr.io/astral-sh/uv:python3.13-bookworm-slim", #this is uv's own official image, comes with uv pre-installed
-                "uv", "run", filename, #uses python's virtual environment with dependencies
-            ],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=300,
-        )
+        result = docker_uv_run([filename])
         return (
             f"Exit code: {result.returncode}\n\n"
             f"--- stdout ---\n{result.stdout or '(empty)'}\n\n"

@@ -3,43 +3,57 @@ import sys
 import warnings
 
 from datetime import datetime
+from pathlib import Path
 
 import engineering_team.patch  # noqa: F401 — applies CrewAI MCP monkey-patch on import
 from engineering_team.crew import EngineeringTeam
 from .tools.sandbox_tools import reset_sandbox
+from .quality_gate import gate_results, reset_gate_results
+from .run_report import build_report, save_report, to_markdown
 warnings.filterwarnings("ignore", category=SyntaxWarning, module="pysbd")
 
-# This main file is intended to be a way for you to run your
-# crew locally, so refrain from adding unnecessary logic into this file.
-# Replace with inputs you want to test with, it will automatically
-# interpolate any tasks and agents information
+# Requirements live in markdown files, so the crew can build something new without code changes:
+#   uv run run_crew                      -> requirements/trading_account.md
+#   uv run run_crew expense_tracker      -> requirements/expense_tracker.md
+#   uv run run_crew path/to/my_spec.md   -> any file
+REQUIREMENTS_DIR = Path(__file__).parents[2] / "requirements"
+DEFAULT_REQUIREMENTS = "trading_account"
 
-requirements = """
-A simple account management system for a trading simulation platform.
-The system should allow users to create an account, deposit funds, and withdraw funds.
-The system should allow users to record that they have bought or sold shares, providing a quantity.
-The system should calculate the total value of the user's portfolio, and the profit or loss from the initial deposit.
-The system should be able to report the holdings of the user at any point in time.
-The system should be able to report the profit or loss of the user at any point in time.
-The system should be able to list the transactions that the user has made over time.
-The system should prevent the user from withdrawing funds that would leave them with a negative balance, or
- from buying more shares than they can afford, or selling shares that they don't have.
- The system has access to a function get_share_price(symbol) which returns the current price of a share, and includes a test implementation that returns fixed prices for AAPL, TSLA, GOOGL.
-"""
+
+def resolve_requirements(arg: str | None) -> Path:
+    """Find a requirements file from a path, or a name in the requirements folder."""
+    name = arg or DEFAULT_REQUIREMENTS
+    for candidate in (Path(name), REQUIREMENTS_DIR / name, REQUIREMENTS_DIR / f"{name}.md"):
+        if candidate.is_file():
+            return candidate
+    available = ", ".join(sorted(p.stem for p in REQUIREMENTS_DIR.glob("*.md")))
+    raise FileNotFoundError(f"No requirements file '{name}'. Available: {available}")
+
 
 def run():
     """
-    Run the crew.
+    Run the crew on a requirements file, then save a run report and a copy of the app it built.
     """
+    path = resolve_requirements(sys.argv[1] if len(sys.argv) > 1 else None)
     inputs = {
-        'requirements':requirements
+        'requirements': path.read_text(encoding="utf-8")
     }
 
+    reset_sandbox() #fresh start each time we run the crew
+    reset_gate_results()
+    crew = EngineeringTeam().crew()
+    started, error = datetime.now(), None
     try:
-        reset_sandbox() #fresh start each time we run the crew
-        EngineeringTeam().crew().kickoff(inputs=inputs)
+        crew.kickoff(inputs=inputs)
     except Exception as e:
-        raise Exception(f"An error occurred while running the crew: {e}")
+        error = str(e)
+    finally:
+        report = build_report(path.name, started, datetime.now(), crew.agents, dict(gate_results), error)
+        run_dir = save_report(report)
+        print(to_markdown(report))
+        print(f"Run report and app saved to {run_dir}")
+    if error:
+        raise Exception(f"An error occurred while running the crew: {error}")
 
 
 def train():

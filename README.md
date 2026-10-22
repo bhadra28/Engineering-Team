@@ -23,6 +23,24 @@ The agents run sequentially and share a `sandbox/` folder through custom tools
 `src/engineering_team/patch.py` works around a CrewAI 1.14.4 bug that made MCP tools with hyphens
 in their names unreachable.
 
+## Quality gates and run reports
+
+My addition to the course project. An agent saying "all tests pass" isn't proof, so the crew now checks
+its own work and reports what each run cost.
+
+- **Quality gates** (`src/engineering_team/quality_gate.py`): CrewAI task guardrails that run the code
+  themselves in the same Docker sandbox. The test task only completes once
+  `python -m unittest discover` finds tests and they all pass. The frontend task only completes once the
+  Gradio app builds. On failure, the task goes back to the agent with the real error output (up to 3 retries).
+- **Run reports** (`src/engineering_team/run_report.py`): every run writes `runs/<timestamp>/report.md` and
+  `report.json`, covering status, duration, gate attempts, and tokens and estimated cost per agent
+  (from OpenAI list prices in `PRICES`). It also saves a copy of the app the crew built, so earlier runs
+  survive the next sandbox reset.
+- **Requirements as files** (`requirements/`): pick a spec by name, with no code changes. Three are included:
+  `trading_account`, `expense_tracker` and `inventory_manager`.
+- **Tests**: a pytest suite for the gates, cost maths, reports and requirements loading. It needs no
+  Docker or API key.
+
 ## Example output
 
 `example_output/` holds the app the crew built on one run: the design, backend, Gradio UI, unit
@@ -41,17 +59,23 @@ cp .env.example .env   # then add your OpenAI API key
 ## Run
 
 ```bash
-uv run run_crew
+uv run run_crew                    # builds requirements/trading_account.md
+uv run run_crew expense_tracker    # or any spec in requirements/, or a path to your own .md file
 ```
 
-This resets `sandbox/` and runs the crew. When it finishes, try the app it built:
+This resets `sandbox/`, runs the crew, prints the run report and saves it under `runs/`. When it finishes,
+try the app it built:
 
 ```bash
 cd sandbox
 uv run app.py
 ```
 
-To build something different, edit the `requirements` text in `src/engineering_team/main.py`.
+Run the tests with:
+
+```bash
+uv run pytest tests
+```
 
 ## Credits
 
